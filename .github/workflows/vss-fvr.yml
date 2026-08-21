@@ -9,9 +9,12 @@ name: VSS FVR (unattended)
 # runs over SSH against SERVER_HOST (a fixed, pre-provisioned GPU box).
 
 on:
-  push:
-    branches:
-      - main
+  # Deliberately workflow_dispatch-only, no `push:` trigger. A push kicking
+  # off a real (multi-$, ~1h) GPU run for any unrelated commit -- and always
+  # defaulting to `lvs` regardless of what actually changed -- was a real
+  # hazard hit in practice (a docs/config-only push queued a redundant lvs
+  # run behind an intentionally-dispatched alerts run). Explicit dispatch
+  # means every run is a deliberate choice with a chosen profile.
   workflow_dispatch:
     inputs:
       profiles:
@@ -27,8 +30,8 @@ on:
         required: false
         default: ""
 
-  # Add schedule only after push-triggered runs have been verified clean and
-  # the GPU-box lifecycle policy is decided.
+  # Add schedule only after workflow_dispatch-triggered runs have been
+  # verified clean and the GPU-box lifecycle policy is decided.
   # schedule:
   #   - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
 
