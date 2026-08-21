@@ -82,12 +82,6 @@ jobs:
             vlm_provider: ""
 
     env:
-      # actions/setup-python defaults its tool-cache dir to the GitHub-hosted
-      # convention (/Users/runner/hostedtoolcache on macOS), which this
-      # self-hosted runner's user can't write to. Point it at a writable dir
-      # instead. `runner.*` isn't a valid context at job-level `env:`
-      # (actionlint caught this), so `github.workspace` is used instead.
-      RUNNER_TOOL_CACHE: ${{ github.workspace }}/.hostedtoolcache
       SERVER_HOST: ${{ secrets.VSS_SERVER_HOST }}
       SERVER_USER: ${{ secrets.VSS_SERVER_USER }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -177,11 +171,38 @@ jobs:
           path: video-search-and-summarization
           lfs: false # plain-text .env/docs only; no need to pull LFS sample data for tooling reads
 
-      - name: Set up Python
+      # actions/setup-python is a known-broken fit for self-hosted macOS
+      # runners: its install script hardcodes /Users/runner/hostedtoolcache
+      # regardless of RUNNER_TOOL_CACHE (confirmed via actions/setup-python
+      # issues #974/#792 -- an upstream account-name assumption, not
+      # something fixable via env vars). Use whatever Python 3.10+ is
+      # already on this runner instead (vss-preflight.py needs 3.10+ for its
+      # PEP 604 union type hints; system python3 here is 3.9.6, too old --
+      # `brew install python@3.11` was run once, out-of-band, on this box).
+      - name: Ensure Python 3.10+ on PATH
         if: steps.gate.outputs.run == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        shell: bash
+        run: |
+          for candidate_dir in \
+            /opt/homebrew/opt/python@3.12/libexec/bin \
+            /opt/homebrew/opt/python@3.11/libexec/bin \
+            /opt/homebrew/opt/python@3.10/libexec/bin \
+            /usr/local/opt/python@3.12/libexec/bin \
+            /usr/local/opt/python@3.11/libexec/bin \
+            /usr/local/opt/python@3.10/libexec/bin; do
+            if [ -x "$candidate_dir/python3" ]; then
+              echo "$candidate_dir" >> "$GITHUB_PATH"
+              echo "Using $("$candidate_dir/python3" --version) from $candidate_dir"
+              exit 0
+            fi
+          done
+          if command -v python3 >/dev/null 2>&1 && \
+             python3 -c 'import sys; exit(0 if sys.version_info >= (3, 10) else 1)'; then
+            echo "System python3 ($(python3 --version)) is already 3.10+."
+            exit 0
+          fi
+          echo "::error::No Python 3.10+ found on this runner. Install one (e.g. 'brew install python@3.11' on macOS) and ensure it's on PATH." >&2
+          exit 1
 
       - name: Write SSH key
         if: steps.gate.outputs.run == 'true'
