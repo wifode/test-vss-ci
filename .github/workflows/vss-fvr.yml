@@ -82,6 +82,11 @@ jobs:
             vlm_provider: ""
 
     env:
+      # actions/setup-python defaults its tool-cache dir to the GitHub-hosted
+      # convention (/Users/runner/hostedtoolcache on macOS), which this
+      # self-hosted runner's user can't write to. Point it at the runner's
+      # own writable temp dir instead.
+      RUNNER_TOOL_CACHE: ${{ runner.temp }}/hostedtoolcache
       SERVER_HOST: ${{ secrets.VSS_SERVER_HOST }}
       SERVER_USER: ${{ secrets.VSS_SERVER_USER }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
