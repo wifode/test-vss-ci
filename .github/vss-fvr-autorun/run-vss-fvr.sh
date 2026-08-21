@@ -445,6 +445,17 @@ REMOTE_VSS_DIR="${REMOTE_VSS_REPO_DIR:-~/video-search-and-summarization}"
 # its checkout directory works here without touching this script. Runs inside
 # `cd $REMOTE_VSS_DIR` on the remote box.
 REMOTE_TEARDOWN_CMD="${REMOTE_TEARDOWN_CMD:-deploy/docker/scripts/dev-profile.sh down}"
+# The teardown-verification check below must only look at containers the
+# product itself deployed, not every container on the box -- some GPU cloud
+# providers (observed: Crusoe-backed Brev boxes) run their own permanent
+# monitoring sidecars (vector, dcgm-exporter, log-collector,
+# metrics-exporter) that have nothing to do with the product and are never
+# going away. A raw `docker ps -aq` count treats those as "dirty" forever,
+# permanently misreporting every future run -- even a perfectly clean one --
+# as failed (AI_ASSETS/DECISIONS.md I23). Scoped to the product's own compose
+# project via the standard `com.docker.compose.project` label; overridable
+# for products that aren't VSS.
+REMOTE_VSS_COMPOSE_PROJECT="${REMOTE_VSS_COMPOSE_PROJECT:-mdx}"
 
 forced_teardown() {
   echo "[run-vss-fvr] Forced teardown: tearing down '${PROFILE}' on ${SERVER_HOST} (backstop, independent of the agent's own Step 9 cleanup)..."
@@ -468,13 +479,15 @@ forced_teardown() {
   local remaining="" attempt
   for attempt in 1 2 3 4 5; do
     remaining="$(ssh "${ssh_opts[@]}" \
-      "${SERVER_USER}@${SERVER_HOST}" "docker ps -aq | wc -l" 2>>"$teardown_log" | tr -d ' ')"
+      "${SERVER_USER}@${SERVER_HOST}" \
+      "docker ps -aq --filter 'label=com.docker.compose.project=${REMOTE_VSS_COMPOSE_PROJECT}' | wc -l" \
+      2>>"$teardown_log" | tr -d ' ')"
     [[ -n "$remaining" ]] && break
     echo "[run-vss-fvr] Teardown-verification SSH attempt $attempt/5 failed/empty -- retrying in 15s..." >&2
     sleep 15
   done
   if [[ "$remaining" == "0" ]]; then
-    echo "[run-vss-fvr] Teardown verified clean: 0 containers remaining on ${SERVER_HOST}."
+    echo "[run-vss-fvr] Teardown verified clean: 0 '${REMOTE_VSS_COMPOSE_PROJECT}' containers remaining on ${SERVER_HOST} (other host infrastructure, if any, is out of scope)."
     echo "clean" > "$LOG_DIR/CI-TEARDOWN-STATUS"
     return 0
   elif [[ -z "$remaining" ]]; then
@@ -483,7 +496,7 @@ forced_teardown() {
     echo "unknown (ssh unreachable after 5 attempts)" > "$LOG_DIR/CI-TEARDOWN-STATUS"
     return 1
   else
-    echo "[run-vss-fvr] WARNING: teardown left ${remaining} container(s) running on ${SERVER_HOST}. See $teardown_log" >&2
+    echo "[run-vss-fvr] WARNING: teardown left ${remaining} '${REMOTE_VSS_COMPOSE_PROJECT}' container(s) running on ${SERVER_HOST}. See $teardown_log" >&2
     echo "dirty (${remaining} containers)" > "$LOG_DIR/CI-TEARDOWN-STATUS"
     return 1
   fi
@@ -818,6 +831,16 @@ if ! forced_teardown; then
   echo "[run-vss-fvr] Box was NOT left clean -- see CI-TEARDOWN.log. Marking run failed" \
        "so this doesn't silently contaminate the next run." >&2
   [[ "$FINAL_EXIT" -eq 0 ]] && FINAL_EXIT=1
+  # CI-STATUS was already written above (before teardown ran) and, unlike
+  # the incomplete-no-report/report-integrity-failed paths, was never
+  # updated to reflect this -- so it could read "ok" on disk while the
+  # process exit code (checked above) says failure. Only overwrite when it
+  # was "ok": a more specific earlier failure reason (e.g.
+  # report-integrity-failed) is more useful than this one and should win.
+  if [[ "$CI_STATUS" == "ok" ]]; then
+    CI_STATUS="teardown-not-clean (see CI-TEARDOWN-STATUS)"
+    echo "$CI_STATUS" > "$LOG_DIR/CI-STATUS"
+  fi
 fi
 
 echo "[run-vss-fvr] Done ($CI_STATUS). Log directory: $LOG_DIR"

@@ -75,11 +75,14 @@ jobs:
             vlm_mode: local
             llm_provider: ""
             vlm_provider: ""
+          # Real-time alerts with a remote VLM (alerts.md "Path B") --
+          # deliberately avoids local RT-VLM, sidestepping the model-download
+          # corruption bug the local-VLM lvs run just found (run 32524621317).
           - profile: alerts
             llm_mode: remote
-            vlm_mode: local
+            vlm_mode: remote
             llm_provider: nvidia
-            vlm_provider: ""
+            vlm_provider: nvidia
 
     env:
       SERVER_HOST: ${{ secrets.VSS_SERVER_HOST }}
