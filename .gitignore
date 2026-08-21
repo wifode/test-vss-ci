@@ -19,3 +19,11 @@ deploy/docker/rag-secret.override.yml
 *.log
 *checkpoint.*
 .orchestrator-artifacts/*
+AI_ASSETS/*
+
+.env.*
+
+# Self-hosted GitHub Actions runner install (local machine setup, contains
+# .credentials/.runner registration secrets) -- never commit this.
+actions-runner/
+actions-runner-*.tar.gz

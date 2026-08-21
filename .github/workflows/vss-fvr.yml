@@ -1,0 +1,235 @@
+name: VSS FVR (unattended)
+
+# Runs the FVR pipeline against the VSS Blueprint, one job per developer
+# profile x deployment mode combination, fully unattended -- see
+# .github/vss-fvr-autorun/CI_OVERRIDE.md and run-vss-fvr.sh for how the pipeline's
+# normal human-in-the-loop gates are auto-resolved for CI.
+#
+# The runner itself does not need a GPU: every product-affecting command
+# runs over SSH against SERVER_HOST (a fixed, pre-provisioned GPU box).
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      profiles:
+        description: "Comma-separated profiles to run (default: all matched below)"
+        required: false
+        default: "lvs"
+      docs_urls:
+        description: "Comma-separated documentation URLs to review (blank = the driver's built-in defaults). Pin a version rather than /latest/ so every job in this run reads the same source material."
+        required: false
+        default: ""
+      model:
+        description: "ANTHROPIC_MODEL override (route-specific ID, not a bare model name -- see AI_ASSETS/DECISIONS.md I9). Blank uses the default below."
+        required: false
+        default: ""
+
+  # Add schedule only after push-triggered runs have been verified clean and
+  # the GPU-box lifecycle policy is decided.
+  # schedule:
+  #   - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+
+concurrency:
+  group: vss-fvr-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  fvr:
+    # No OS label: the current runner is macOS (your machine, for this first
+    # test); a future production runner may be Linux. run-vss-fvr.sh already
+    # supports both (caffeinate/timeout-vs-gtimeout branches).
+    runs-on: [self-hosted]
+    timeout-minutes: 240 # hard backstop above run-vss-fvr.sh's own --timeout-hours
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Hardcoded local/local for the first end-to-end test, matching
+          # this run's actual Brev provisioning -- deliberately NOT the
+          # pre-baked vss-lvs-l40s-remote_llm-local_vlm.yaml fast path, so
+          # this falls back to live test-plan-creator generation (D4/D13).
+          # These four fields are the only thing that needs to change to
+          # try a different combo -- no script edit required, since they're
+          # passed straight through as run-vss-fvr.sh CLI args below.
+          - profile: lvs
+            llm_mode: local
+            vlm_mode: local
+            llm_provider: ""
+            vlm_provider: ""
+          # No pre-baked plan yet for these -- the driver falls back to
+          # CI-driven plan generation per CI_OVERRIDE.md
+          # until review-configs/vss-{base,alerts,search}-*.yaml are
+          # authored offline (see Part 2 of the CI plan). Left in the matrix
+          # so coverage grows automatically as those plans are added, but
+          # gated behind the workflow_dispatch `profiles` input by default.
+          - profile: base
+            llm_mode: remote
+            vlm_mode: remote
+            llm_provider: nvidia
+            vlm_provider: nvidia
+          - profile: search
+            llm_mode: local
+            vlm_mode: local
+            llm_provider: ""
+            vlm_provider: ""
+          - profile: alerts
+            llm_mode: remote
+            vlm_mode: local
+            llm_provider: nvidia
+            vlm_provider: ""
+
+    env:
+      SERVER_HOST: ${{ secrets.VSS_SERVER_HOST }}
+      SERVER_USER: ${{ secrets.VSS_SERVER_USER }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # Model ID is not sensitive (unlike the base URL, which is an internal
+      # endpoint) -- versioned as a default here, overridable per-run via the
+      # workflow_dispatch `model` input, no secrets-UI edit needed either way.
+      # Default is the confirmed-working ID for this account's route (see
+      # AI_ASSETS/DECISIONS.md I9) -- update this literal if that changes.
+      ANTHROPIC_MODEL: ${{ github.event.inputs.model || 'aws/anthropic/claude-opus-4-5' }}
+      NGC_API_KEY: ${{ secrets.NGC_API_KEY }}
+      NGC_CLI_API_KEY: ${{ secrets.NGC_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LLM_ENDPOINT_URL: ${{ secrets.VSS_LLM_ENDPOINT_URL }}
+      NV_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      # Comma-separated; empty falls through to run-vss-fvr.sh's built-in
+      # defaults. Set once here so every matrix job reviews the same pages.
+      FVR_DOCS_URLS: ${{ inputs.docs_urls }}
+      GDOC_ENABLED: "false"
+      LITMUS_ENABLED: "false"
+
+    steps:
+      - name: Skip if not requested
+        id: gate
+        shell: bash
+        run: |
+          requested="${{ github.event.inputs.profiles || 'lvs' }}"
+          if [[ ",${requested}," == *",${{ matrix.profile }},"* || "$requested" == "all" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # This repo's own CI driver (scripts/ci scripts, CI_OVERRIDE.md) --
+      # separate from the fvr-skill checkout below. run-vss-fvr.sh and
+      # CI_OVERRIDE.md are NOT expected to exist in fvr-skill; they live only
+      # here and are invoked from this checkout, never copied.
+      - name: Checkout CI driver (this repo)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          path: ci-driver
+
+      # actions/checkout only talks to GitHub; fvr-skill lives on NVIDIA's
+      # internal GitLab, so it's cloned directly instead. Nothing here is
+      # committed to this repo -- the clone lives only in the ephemeral job
+      # workspace, and supplies AGENTS.md / .claude/agents / scripts/fvr-log.py
+      # / knowledge / schemas / review-configs -- the files this repo's own
+      # driver does NOT ship and does not expect to find in this repo.
+      #
+      # TEMPORARY (first end-to-end test only): cloned over SSH using
+      # whatever credentials are already configured for the user running this
+      # self-hosted runner (your own machine, your own gitlab-master access).
+      # No GitHub secret needed for this. Before this becomes a recurring or
+      # production pipeline, switch to a project-scoped, read-only GitLab
+      # deploy token (needs maintainer on fvr-skill to create -- escalate
+      # separately) so CI doesn't depend on one person's personal credential.
+      - name: Checkout fvr-skill
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          git clone --depth 1 \
+            git@gitlab-master.nvidia.com:vdragents-external/fvr-skill.git \
+            fvr-skill
+
+      # Local reference checkout for THIS RUNNER's own tooling only (reading
+      # profile .env templates for the required-var check, and skill
+      # reference docs when no pre-baked plan matches) -- NOT installed onto
+      # the SSH target. The agent gets VSS onto the actual GPU box itself,
+      # live, by following the product's published docs over SSH as part of
+      # Doc-Faithful Testing. See AI_ASSETS/DECISIONS.md.
+      - name: Checkout VSS repo (local reference for preflight tooling only)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: NVIDIA-AI-Blueprints/video-search-and-summarization
+          path: video-search-and-summarization
+          lfs: false # plain-text .env/docs only; no need to pull LFS sample data for tooling reads
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Write SSH key
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        env:
+          VSS_SERVER_SSH_KEY: ${{ secrets.VSS_SERVER_SSH_KEY }}
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/vss_ssh_key"
+          printf '%s' "$VSS_SERVER_SSH_KEY" > "$RUNNER_TEMP/vss_ssh_key"
+          echo "SSH_KEY_PATH=$RUNNER_TEMP/vss_ssh_key" >> "$GITHUB_ENV"
+
+      - name: Install claude CLI
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+      - name: Install Playwright (for ui-tester)
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          npm install -g playwright
+          npx playwright install --with-deps chromium
+
+      # working-directory is the fvr-skill clone, not ci-driver: run-vss-fvr.sh
+      # never `cd`s internally, so whatever directory it's launched from is
+      # where `claude` looks for AGENTS.md / .claude/agents. CI_OVERRIDE.md is
+      # still read from this repo's checkout regardless of cwd, since
+      # run-vss-fvr.sh resolves it relative to its own script path
+      # ($SCRIPT_DIR), not the working directory.
+      - name: Run FVR for ${{ matrix.profile }}
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        working-directory: fvr-skill
+        env:
+          VSS_REPO_LOCAL_REFERENCE: ${{ github.workspace }}/video-search-and-summarization
+          FVR_SKILL_REPO: ${{ github.workspace }}/fvr-skill
+        run: |
+          "${{ github.workspace }}/ci-driver/.github/vss-fvr-autorun/run-vss-fvr.sh" "${{ matrix.profile }}" \
+            --llm-mode "${{ matrix.llm_mode }}" \
+            --vlm-mode "${{ matrix.vlm_mode }}" \
+            --llm-provider "${{ matrix.llm_provider }}" \
+            --vlm-provider "${{ matrix.vlm_provider }}" \
+            --timeout-hours 3
+
+      - name: Upload logs and reports
+        if: steps.gate.outputs.run == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vss-fvr-${{ matrix.profile }}-${{ github.run_id }}
+          path: |
+            fvr-skill/logs/vss-${{ matrix.profile }}-*/**
+            fvr-skill/reports/vss-${{ matrix.profile }}-*.md
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Job summary
+        if: steps.gate.outputs.run == 'true' && always()
+        shell: bash
+        run: |
+          status_file=$(ls fvr-skill/logs/vss-${{ matrix.profile }}-*/CI-STATUS 2>/dev/null | tail -1 || true)
+          status="unknown"
+          [[ -n "$status_file" ]] && status="$(cat "$status_file")"
+          echo "### VSS FVR — ${{ matrix.profile }}: \`$status\`" >> "$GITHUB_STEP_SUMMARY"
