@@ -134,19 +134,22 @@ jobs:
       # / knowledge / schemas / review-configs -- the files this repo's own
       # driver does NOT ship and does not expect to find in this repo.
       #
-      # TEMPORARY (first end-to-end test only): cloned over SSH using
-      # whatever credentials are already configured for the user running this
-      # self-hosted runner (your own machine, your own gitlab-master access).
-      # No GitHub secret needed for this. Before this becomes a recurring or
-      # production pipeline, switch to a project-scoped, read-only GitLab
-      # deploy token (needs maintainer on fvr-skill to create -- escalate
-      # separately) so CI doesn't depend on one person's personal credential.
+      # TEMPORARY (first end-to-end test only): SSH clone was tried first but
+      # blocks forever on an interactive passphrase prompt in a headless
+      # runner -- fatal for an unattended pipeline. Switched to HTTPS with a
+      # GitLab personal access token (self-service, read_repository scope,
+      # created under the user's own account -- no maintainer needed, unlike
+      # a project deploy token). Still personal-credential-based; swap for a
+      # project-scoped deploy token once maintainer access is escalated, so
+      # CI doesn't depend on one person's token indefinitely.
       - name: Checkout fvr-skill
         if: steps.gate.outputs.run == 'true'
         shell: bash
+        env:
+          GITLAB_FVR_SKILL_TOKEN: ${{ secrets.GITLAB_FVR_SKILL_TOKEN }}
         run: |
           git clone --depth 1 \
-            git@gitlab-master.nvidia.com:vdragents-external/fvr-skill.git \
+            "https://oauth2:${GITLAB_FVR_SKILL_TOKEN}@gitlab-master.nvidia.com/vdragents-external/fvr-skill.git" \
             fvr-skill
 
       # Local reference checkout for THIS RUNNER's own tooling only (reading
