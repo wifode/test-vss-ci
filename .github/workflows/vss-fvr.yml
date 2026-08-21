@@ -154,6 +154,11 @@ jobs:
         env:
           GITLAB_FVR_SKILL_TOKEN: ${{ secrets.GITLAB_FVR_SKILL_TOKEN }}
         run: |
+          # Self-hosted runners reuse their _work dir across runs (unlike
+          # GitHub-hosted ephemeral VMs), so a prior run's checkout can still
+          # be here and `git clone` refuses to clone into a non-empty dir.
+          # This checkout is purely ephemeral input, safe to always wipe.
+          rm -rf fvr-skill
           git clone --depth 1 \
             "https://oauth2:${GITLAB_FVR_SKILL_TOKEN}@gitlab-master.nvidia.com/vdragents-external/fvr-skill.git" \
             fvr-skill
