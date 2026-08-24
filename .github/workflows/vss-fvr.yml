@@ -227,12 +227,26 @@ jobs:
       # which gets `rm -rf` fresh every run -- without this symlink, every
       # run's report would be deleted by the next run's checkout, and only
       # whatever made it into a GitHub artifact would survive at all.
-      - name: Persist reports across runs
+      # logs/ ALSO needs this symlink, not just FVR_LOGS_ROOT (set on the
+      # "Run FVR" step): FVR_LOGS_ROOT only redirects where run-vss-fvr.sh
+      # ITSELF writes (00-config.yaml, 01-doc-review.md, etc. -- confirmed
+      # correct). But the agent, per AGENTS.md's own upstream (unmodifiable)
+      # conventions, writes some artifacts -- confirmed: CI-BLOCKED.md, the
+      # fail-closed clause's artifact -- via a bare relative "logs/..." path,
+      # which resolves against its cwd (fvr-skill/), not our env var. A real
+      # disk-space blocker got silently lost this way (I27 continuation, see
+      # AI_ASSETS/DECISIONS.md): the agent wrote a fully correct diagnosis to
+      # fvr-skill/logs/.../CI-BLOCKED.md, which nothing ever looked at, so
+      # the run was misclassified incomplete-no-report instead of blocked.
+      # The symlink makes both path conventions land in the same place,
+      # regardless of which one any given artifact uses.
+      - name: Persist logs/reports across runs
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
-          mkdir -p fvr-history/reports
-          rm -rf fvr-skill/reports
+          mkdir -p fvr-history/logs fvr-history/reports
+          rm -rf fvr-skill/logs fvr-skill/reports
+          ln -s "${{ github.workspace }}/fvr-history/logs" fvr-skill/logs
           ln -s "${{ github.workspace }}/fvr-history/reports" fvr-skill/reports
 
       # Local reference checkout for THIS RUNNER's own tooling only (reading
