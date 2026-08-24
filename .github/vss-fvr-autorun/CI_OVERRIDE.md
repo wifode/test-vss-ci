@@ -33,6 +33,20 @@ never fabricate one, and never let an unresolved question hang the run.**
 - **If test-plan-creator instead returns an OPEN QUESTIONS block with no
   plan:** see "Open questions with a likely answer" below before treating
   this as a failure.
+- **If the specifically-requested `LLM_MODE`/`VLM_MODE` combination does
+  not fit the *actual detected hardware* per the product's own documented
+  sizing rules** (e.g. the docs say a 2-GPU host can't run this pairing
+  locally, or that this profile needs a GPU count you don't have): **do
+  not silently substitute a different mode and proceed.** The CI matrix
+  intentionally includes combinations that may not fit every box it runs
+  on -- the correct response to a genuine mismatch is to stop cleanly, not
+  to quietly test a different configuration than the one the run was
+  labeled with. Write `CI-SKIPPED-INFEASIBLE.md` to the log directory: one
+  paragraph stating the requested combination, the detected hardware, and
+  the specific documented rule that rules it out (cite the doc/section).
+  Then stop -- do not invoke test-plan-creator further, do not proceed to
+  Step 1. This is a correct, expected outcome for some matrix cells, not a
+  failure.
 
 ## Step 1b — Feature clarifications
 

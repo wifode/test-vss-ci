@@ -706,6 +706,16 @@ elif grep -q "Background tasks still running after" "$LOG_DIR/claude-stderr.log"
   echo "subagent was still outstanding past the print-mode wait ceiling." >&2
   CI_STATUS="terminated-bg-task-timeout"
   FINAL_EXIT=1
+elif [[ -f "$LOG_DIR/CI-SKIPPED-INFEASIBLE.md" ]]; then
+  # CI_OVERRIDE.md's Step 0 addition: the matrix intentionally includes
+  # mode combinations that may not fit every box it runs on. A cell
+  # correctly recognizing "this doesn't fit THIS hardware" and stopping
+  # before deploying anything is a correct, cheap, expected outcome for
+  # some cells -- not a failure, and not "incomplete" (which implies the
+  # pipeline died mid-flight, not that it made a deliberate early stop).
+  echo "[run-vss-fvr] Requested mode combination does not fit the detected" >&2
+  echo "hardware -- see CI-SKIPPED-INFEASIBLE.md in $LOG_DIR." >&2
+  CI_STATUS="skipped-hardware-infeasible"
 elif [[ -f "$LOG_DIR/CI-BLOCKED.md" ]]; then
   # Check the artifact CI_OVERRIDE.md's fail-closed clause actually
   # instructs the agent to write, not a raw string grep over the full

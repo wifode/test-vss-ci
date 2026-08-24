@@ -49,25 +49,53 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Full 4 (profile) x 4 (llm_mode x vlm_mode) cross-product,
+        # deliberately NOT pre-filtered by today's specific GPU box. Which
+        # combos actually fit is a function of whatever hardware is attached
+        # when a run happens -- checked live, per-run, against the real
+        # detected inventory (already threaded into the agent's plan-creation
+        # prompt), not assumed here. A cell whose requested combo doesn't fit
+        # the attached hardware is expected to recognize that itself and stop
+        # cleanly (CI-STATUS: skipped-hardware-infeasible, near-zero cost --
+        # see CI_OVERRIDE.md's Step 0 addition) rather than being silently
+        # excluded from the matrix or silently substituted with a different
+        # config than the one it's labeled with.
         include:
-          # Hardcoded local/local for the first end-to-end test, matching
-          # this run's actual Brev provisioning -- deliberately NOT the
-          # pre-baked vss-lvs-l40s-remote_llm-local_vlm.yaml fast path, so
-          # this falls back to live test-plan-creator generation (D4/D13).
-          # These four fields are the only thing that needs to change to
-          # try a different combo -- no script edit required, since they're
-          # passed straight through as run-vss-fvr.sh CLI args below.
           - profile: lvs
             llm_mode: local
             vlm_mode: local
             llm_provider: ""
             vlm_provider: ""
-          # No pre-baked plan yet for these -- the driver falls back to
-          # CI-driven plan generation per CI_OVERRIDE.md
-          # until review-configs/vss-{base,alerts,search}-*.yaml are
-          # authored offline (see Part 2 of the CI plan). Left in the matrix
-          # so coverage grows automatically as those plans are added, but
-          # gated behind the workflow_dispatch `profiles` input by default.
+          - profile: lvs
+            llm_mode: local
+            vlm_mode: remote
+            llm_provider: ""
+            vlm_provider: nvidia
+          - profile: lvs
+            llm_mode: remote
+            vlm_mode: local
+            llm_provider: nvidia
+            vlm_provider: ""
+          - profile: lvs
+            llm_mode: remote
+            vlm_mode: remote
+            llm_provider: nvidia
+            vlm_provider: nvidia
+          - profile: base
+            llm_mode: local
+            vlm_mode: local
+            llm_provider: ""
+            vlm_provider: ""
+          - profile: base
+            llm_mode: local
+            vlm_mode: remote
+            llm_provider: ""
+            vlm_provider: nvidia
+          - profile: base
+            llm_mode: remote
+            vlm_mode: local
+            llm_provider: nvidia
+            vlm_provider: ""
           - profile: base
             llm_mode: remote
             vlm_mode: remote
@@ -78,9 +106,36 @@ jobs:
             vlm_mode: local
             llm_provider: ""
             vlm_provider: ""
-          # Real-time alerts with a remote VLM (alerts.md "Path B") --
-          # deliberately avoids local RT-VLM, sidestepping the model-download
-          # corruption bug the local-VLM lvs run just found (run 32524621317).
+          - profile: search
+            llm_mode: local
+            vlm_mode: remote
+            llm_provider: ""
+            vlm_provider: nvidia
+          - profile: search
+            llm_mode: remote
+            vlm_mode: local
+            llm_provider: nvidia
+            vlm_provider: ""
+          - profile: search
+            llm_mode: remote
+            vlm_mode: remote
+            llm_provider: nvidia
+            vlm_provider: nvidia
+          - profile: alerts
+            llm_mode: local
+            vlm_mode: local
+            llm_provider: ""
+            vlm_provider: ""
+          - profile: alerts
+            llm_mode: local
+            vlm_mode: remote
+            llm_provider: ""
+            vlm_provider: nvidia
+          - profile: alerts
+            llm_mode: remote
+            vlm_mode: local
+            llm_provider: nvidia
+            vlm_provider: ""
           - profile: alerts
             llm_mode: remote
             vlm_mode: remote
