@@ -163,6 +163,23 @@ jobs:
             "https://oauth2:${GITLAB_FVR_SKILL_TOKEN}@gitlab-master.nvidia.com/vdragents-external/fvr-skill.git" \
             fvr-skill
 
+      # run-vss-fvr.sh's own log-dir root is redirected via FVR_LOGS_ROOT
+      # (set on the "Run FVR" step below) -- that's our file, no symlink
+      # needed there. AGENTS.md Step 9 (upstream, not ours to edit -- D27)
+      # is different: it has the agent copy its report to
+      # reports/{product}-{date}.md relative to its cwd, a path we have no
+      # override for. That path resolves inside the fvr-skill/ clone above,
+      # which gets `rm -rf` fresh every run -- without this symlink, every
+      # run's report would be deleted by the next run's checkout, and only
+      # whatever made it into a GitHub artifact would survive at all.
+      - name: Persist reports across runs
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          mkdir -p fvr-history/reports
+          rm -rf fvr-skill/reports
+          ln -s "${{ github.workspace }}/fvr-history/reports" fvr-skill/reports
+
       # Local reference checkout for THIS RUNNER's own tooling only (reading
       # profile .env templates for the required-var check, and skill
       # reference docs when no pre-baked plan matches) -- NOT installed onto
@@ -247,6 +264,10 @@ jobs:
         env:
           VSS_REPO_LOCAL_REFERENCE: ${{ github.workspace }}/video-search-and-summarization
           FVR_SKILL_REPO: ${{ github.workspace }}/fvr-skill
+          # Root outside fvr-skill/, which gets rm -rf'd and re-cloned every
+          # run -- keeps log history across runs instead of each run
+          # deleting the previous one's.
+          FVR_LOGS_ROOT: ${{ github.workspace }}/fvr-history/logs
         run: |
           "${{ github.workspace }}/ci-driver/.github/vss-fvr-autorun/run-vss-fvr.sh" "${{ matrix.profile }}" \
             --llm-mode "${{ matrix.llm_mode }}" \
@@ -255,14 +276,34 @@ jobs:
             --vlm-provider "${{ matrix.vlm_provider }}" \
             --timeout-hours 3
 
+      # Only curated, structured outputs go to GitHub -- never the raw
+      # claude-stream.jsonl / ci-driver-transcript.log / claude-stderr.log /
+      # 02-commands.jsonl. Those are full verbatim tool_use/tool_result
+      # dumps (a `.env` read, a `docker compose config` dump, etc. could
+      # appear in them raw), and this repo already had a real incident from
+      # uploading exactly that shape of data: skills-eval.yml's artifact
+      # step excludes its own raw per-trial trajectory dir for the same
+      # reason ("PR #516 leaked NGC_CLI_API_KEY this way"). Excluded, not
+      # redacted -- simpler and doesn't depend on correctly enumerating
+      # every secret. The raw files still exist in full at
+      # fvr-history/logs/vss-<profile>-*/ (FVR_LOGS_ROOT, set on the "Run
+      # FVR" step) for local debugging; only what leaves the runner is
+      # narrowed. reports/ still goes through the fvr-skill/reports symlink
+      # (AGENTS.md writes there directly, no override available) but paths
+      # here point at fvr-history/reports directly rather than through it --
+      # unverified whether actions/upload-artifact's glob engine follows
+      # symlinked directories, so this sidesteps the question either way.
       - name: Upload logs and reports
         if: steps.gate.outputs.run == 'true' && always()
         uses: actions/upload-artifact@v4
         with:
           name: vss-fvr-${{ matrix.profile }}-${{ github.run_id }}
           path: |
-            fvr-skill/logs/vss-${{ matrix.profile }}-*/**
-            fvr-skill/reports/vss-${{ matrix.profile }}-*.md
+            fvr-history/logs/vss-${{ matrix.profile }}-*/*.md
+            fvr-history/logs/vss-${{ matrix.profile }}-*/*.yaml
+            fvr-history/logs/vss-${{ matrix.profile }}-*/CI-*
+            fvr-history/logs/vss-${{ matrix.profile }}-*/screenshots/**
+            fvr-history/reports/vss-${{ matrix.profile }}-*.md
           if-no-files-found: warn
           retention-days: 30
 
@@ -270,7 +311,7 @@ jobs:
         if: steps.gate.outputs.run == 'true' && always()
         shell: bash
         run: |
-          status_file=$(ls fvr-skill/logs/vss-${{ matrix.profile }}-*/CI-STATUS 2>/dev/null | tail -1 || true)
+          status_file=$(ls fvr-history/logs/vss-${{ matrix.profile }}-*/CI-STATUS 2>/dev/null | tail -1 || true)
           status="unknown"
           [[ -n "$status_file" ]] && status="$(cat "$status_file")"
           echo "### VSS FVR — ${{ matrix.profile }}: \`$status\`" >> "$GITHUB_STEP_SUMMARY"

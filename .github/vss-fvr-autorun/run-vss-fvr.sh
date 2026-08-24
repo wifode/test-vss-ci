@@ -32,6 +32,10 @@
 # Product-agnostic knobs (this driver is not VSS-specific beyond its
 # defaults -- set these to point it at any product on any SSH box):
 #   FVR_PRODUCT_SLUG     log-directory name prefix (default "vss")
+#   FVR_LOGS_ROOT        root of the default log-dir layout (default:
+#                        $FVR_SKILL_REPO/logs) -- point outside the fvr-skill
+#                        checkout on a runner that wipes/re-clones it every
+#                        run, so history survives across runs
 #   REMOTE_VSS_REPO_DIR  checkout path on the remote box
 #   REMOTE_TEARDOWN_CMD  teardown command run from that directory
 #   FVR_ENFORCE_REPORT_INTEGRITY  "true" makes the post-report integrity
@@ -302,12 +306,20 @@ elif [[ -n "$LOG_DIR_OVERRIDE" ]]; then
   mkdir -p "$LOG_DIR"
   echo "[run-vss-fvr] Log directory (caller-specified): $LOG_DIR"
 else
+  # Root of the default (date+profile, -runN-deduped) log directory layout.
+  # Defaults to inside the fvr-skill checkout (unchanged local/non-CI
+  # behavior); on a self-hosted runner where fvr-skill/ gets wiped and
+  # re-cloned every run (the checkout is ephemeral input, not durable
+  # storage), point this at a location outside that checkout instead so run
+  # history actually survives across runs -- otherwise every run's logs are
+  # deleted by the next run's checkout before anyone can look at them.
+  FVR_LOGS_ROOT="${FVR_LOGS_ROOT:-$FVR_SKILL_REPO/logs}"
   DATE_STR="$(date -u +%Y-%m-%d)"
   BASE_DIR_NAME="${FVR_PRODUCT_SLUG}-${PROFILE}-${DATE_STR}"
-  LOG_DIR="$FVR_SKILL_REPO/logs/${BASE_DIR_NAME}"
+  LOG_DIR="$FVR_LOGS_ROOT/${BASE_DIR_NAME}"
   RUN_N=2
   while [[ -d "$LOG_DIR" ]]; do
-    LOG_DIR="$FVR_SKILL_REPO/logs/${BASE_DIR_NAME}-run${RUN_N}"
+    LOG_DIR="$FVR_LOGS_ROOT/${BASE_DIR_NAME}-run${RUN_N}"
     RUN_N=$((RUN_N + 1))
   done
   mkdir -p "$LOG_DIR"
