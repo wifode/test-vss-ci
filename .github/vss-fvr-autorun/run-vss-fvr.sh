@@ -478,10 +478,24 @@ forced_teardown() {
   # timeout instead of failing fast. I16 observed the verification call below
   # take ~2.5h to return for exactly this reason before this fix.
   local ssh_opts=(-i "$SSH_KEY_PATH" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
+  # Image pruning (-a: every image not used by a running container, not just
+  # dangling layers) runs here too, unconditionally, same as the container
+  # teardown above. A single-profile run never needed this -- pulled images
+  # sitting in the cache between runs was a feature, avoiding a re-pull. A
+  # multi-cell matrix run is different: every cell pulls a different set of
+  # ~60-80GB NIM images with nothing ever reclaiming space between them, and
+  # that filled the disk mid-matrix (AI_ASSETS/DECISIONS.md I28) -- the
+  # search cell's own diagnosis of the failure recommended relocating
+  # Docker's data-root to the box's larger partition instead, but pruning
+  # here is the fix that travels with the driver rather than depending on
+  # one-time host setup. Trades away the cross-cell pull-cache benefit
+  # entirely (every cell now re-pulls from scratch) in exchange for the
+  # matrix actually being able to finish.
   ssh "${ssh_opts[@]}" \
     "${SERVER_USER}@${SERVER_HOST}" \
     "cd ${REMOTE_VSS_DIR} 2>/dev/null && ${REMOTE_TEARDOWN_CMD}; \
-     echo '--- post-teardown docker ps ---'; docker ps -a --format '{{.Names}}\t{{.Status}}'" \
+     echo '--- post-teardown docker ps ---'; docker ps -a --format '{{.Names}}\t{{.Status}}'; \
+     echo '--- docker image prune ---'; docker image prune -af 2>&1" \
     > "$teardown_log" 2>&1
   # Bounded retry (not infinite, not a single shot): a teardown SSH session
   # that just broke mid-command (I16's "Broken pipe") may need the local

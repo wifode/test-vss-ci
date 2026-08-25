@@ -29,6 +29,10 @@ on:
         description: "ANTHROPIC_MODEL override (route-specific ID, not a bare model name -- see AI_ASSETS/DECISIONS.md I9). Blank uses the default below."
         required: false
         default: ""
+      stop_after:
+        description: "TESTING ONLY -- stop-after stage (preflight|plan|deploy|test), cheap validation instead of a full multi-hour run (see run-vss-fvr.sh --stop-after, D31). Blank = full run."
+        required: false
+        default: ""
 
   # Add schedule only after workflow_dispatch-triggered runs have been
   # verified clean and the GPU-box lifecycle policy is decided.
@@ -343,6 +347,7 @@ jobs:
             --vlm-mode "${{ matrix.vlm_mode }}" \
             --llm-provider "${{ matrix.llm_provider }}" \
             --vlm-provider "${{ matrix.vlm_provider }}" \
+            --stop-after "${{ github.event.inputs.stop_after }}" \
             --timeout-hours 3
 
       # Only curated, structured outputs go to GitHub -- never the raw
@@ -384,3 +389,19 @@ jobs:
           status="unknown"
           [[ -n "$status_file" ]] && status="$(cat "$status_file")"
           echo "### VSS FVR — ${{ matrix.profile }}: \`$status\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # Precautionary, not fixing an active problem (checked empirically:
+      # runner disk was at 2% utilization, 821GB free, when this was added
+      # -- unlike the remote box's Docker images, this has never actually
+      # caused a failure). npm/playwright reinstall unpinned on every run
+      # (Install claude CLI / Install Playwright steps); if either package's
+      # resolved version ever drifts between runs, its own cache keeps every
+      # version's downloads/browser binaries rather than replacing them.
+      # Cross-platform cache paths since a future runner may be Linux, not
+      # macOS (same reasoning as the caffeinate/timeout branches elsewhere).
+      - name: Clean local npm/Playwright caches
+        if: steps.gate.outputs.run == 'true' && always()
+        shell: bash
+        run: |
+          npm cache clean --force 2>&1 || true
+          rm -rf ~/Library/Caches/ms-playwright ~/.cache/ms-playwright
