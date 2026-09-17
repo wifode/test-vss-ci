@@ -1,0 +1,167 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Litmus hosted Skill Eval (ADVISORY, independent of the Harbor-based
+# skills-eval.yml pipeline — see .github/skill-eval-litmus/README.md). On a
+# PR touching skills/**, submit one hosted skill-eval-agent run per changed
+# skill to https://litmus.nvidia.com, then post a sticky PR comment with
+# each run's report URL. Never fails the merge; not a required status check.
+#
+# No top-level `paths:` filter — GitHub evaluates `paths:` per-push, not
+# over the cumulative PR diff (the same skills-eval PR #188 regression this
+# repo already worked around), so the changed-skill gate lives inside the
+# `plan` job (plan.py, FETCH_HEAD...HEAD).
+name: Skills Eval (Litmus)
+
+on:
+  push:
+    branches: ["pull-request/[0-9]+"]   # copy-pr-bot mirror branches
+  workflow_dispatch:
+    inputs:
+      skill_source:
+        description: "Explicit skill_source URL (GitHub/GitLab tree link). Leave blank to diff the PR instead."
+        required: false
+        type: string
+      skill_name:
+        description: "Skill name (required if skill_source is set)."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: >-
+    skills-eval-litmus-${{ github.event_name == 'workflow_dispatch'
+      && format('manual-{0}', github.run_id) || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ---------------------------------------------------------------------
+  # plan — compute the changed-skill set from the PR diff (or take the
+  # explicit workflow_dispatch override), and resolve skill_source URLs.
+  # Lightweight: gh + python3, no GPU, no Litmus call.
+  # ---------------------------------------------------------------------
+  plan:
+    name: Plan skill set
+    runs-on: [self-hosted, vss-brev-runner]
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_targets: ${{ steps.plan.outputs.has_targets }}
+      pr_number: ${{ steps.pr.outputs.number }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+    steps:
+      - name: Checkout mirror head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # plan diffs the cumulative head...base range
+
+      - name: Extract PR number + base + head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=" >> "$GITHUB_OUTPUT"
+            echo "base=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "head_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "manual dispatch on ${{ github.ref_name }}"
+          else
+            REF="${{ github.ref_name }}"          # "pull-request/100"
+            PR="${REF##pull-request/}"
+            echo "number=$PR" >> "$GITHUB_OUTPUT"
+            BASE=$(gh pr view "$PR" --json baseRefName --jq .baseRefName)
+            HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
+            echo "base=$BASE" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "PR #$PR, base=$BASE, head=$HEAD_SHA"
+          fi
+
+      - name: Compute matrix
+        id: plan
+        env:
+          PR_BASE: ${{ steps.pr.outputs.base }}
+          # workflow_dispatch with an explicit skill_name bypasses diffing;
+          # blank on push (diff path) and on a dispatch with no override.
+          MANUAL_SKILL: ${{ github.event_name == 'workflow_dispatch' && inputs.skill_name || '' }}
+        run: python3 .github/skill-eval-litmus/plan.py
+
+  # ---------------------------------------------------------------------
+  # litmus-eval — one leg per changed skill. Each leg submits exactly one
+  # hosted Litmus run and does not wait for it to finish (Litmus's own
+  # guidance: submit and move on, reports take minutes to hours).
+  # ---------------------------------------------------------------------
+  litmus-eval:
+    name: ${{ matrix.skill }}
+    needs: plan
+    if: needs.plan.outputs.has_targets == 'true'
+    runs-on: [self-hosted, vss-brev-runner]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    timeout-minutes: 10   # this leg only submits; it never waits on the eval itself
+    steps:
+      - name: Resolve skill_source
+        id: source
+        env:
+          MANUAL_SKILL_SOURCE: ${{ inputs.skill_source }}
+          FALLBACK_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ needs.plan.outputs.head_sha }}/skills/${{ matrix.skill }}
+        run: |
+          set -euo pipefail
+          if [ -n "$MANUAL_SKILL_SOURCE" ]; then
+            printf 'url=%s\n' "$MANUAL_SKILL_SOURCE" >> "$GITHUB_OUTPUT"
+          else
+            printf 'url=%s\n' "$FALLBACK_URL" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Submit Litmus skill-eval run
+        env:
+          LITMUS_BASE_URL: ${{ secrets.LITMUS_BASE_URL }}
+          LITMUS_API_TOKEN: ${{ secrets.LITMUS_API_TOKEN }}
+          SKILL_SOURCE: ${{ steps.source.outputs.url }}
+          SKILL_NAME: ${{ matrix.skill }}
+          EVAL_TYPE: hybrid
+          RESULT_DIR: ${{ runner.temp }}/litmus-results
+        continue-on-error: true   # defense in depth; the script itself also always exits 0
+        run: python3 .github/skill-eval-litmus/submit_run.py
+
+      - name: Upload leg result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills-eval-litmus-leg-${{ matrix.skill }}
+          path: ${{ runner.temp }}/litmus-results/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------
+  # report — merge every leg's submit result and post one sticky PR
+  # comment (or job-summary fallback on a manual, no-PR run).
+  # ---------------------------------------------------------------------
+  report:
+    needs: [plan, litmus-eval]
+    if: always() && needs.plan.outputs.has_targets == 'true'
+    runs-on: [self-hosted, vss-brev-runner]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download leg results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: skills-eval-litmus-leg-*
+          path: ${{ runner.temp }}/litmus-results
+          merge-multiple: true
+      - name: Post sticky comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.plan.outputs.pr_number }}
+          RESULT_DIR: ${{ runner.temp }}/litmus-results
+        run: python3 .github/skill-eval-litmus/post_report_comment.py
