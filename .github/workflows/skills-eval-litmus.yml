@@ -108,6 +108,9 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     timeout-minutes: 10   # this leg only submits; it never waits on the eval itself
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Resolve skill_source
         id: source
         env:
